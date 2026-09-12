@@ -8,7 +8,16 @@ name: private-file-guard
 # is what actually keeps private paths out of a public repository.
 #
 # The pattern list mirrors policy/forbidden-paths.txt in PithTech-Workspace.
-# Change them together or the rings disagree.
+# Change them together or the rings disagree. PithTech-Workspace CI compares
+# this file against that policy on every pull request and fails on a
+# difference, so a change here without the matching change there is caught.
+#
+# The three file patterns are anchored with $ so they match the file itself
+# and not CLAUDE.md.bak or AGENTS.md.tmpl, which the local hooks allow.
+#
+# Every pattern starts with (^|/) rather than ^ so it catches a nested copy.
+# Claude Code reads CLAUDE.md in subdirectories too, so addons/foo/CLAUDE.md
+# is just as private as one at the root.
 
 on: { workflow_call: {} }
 
@@ -22,7 +31,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Refuse private paths
         run: |
-          bad=$(git ls-files | grep -E '^(CLAUDE\.local\.md|CLAUDE\.md|AGENTS\.md|\.claude(/|$)|\.workspace(/|$)|docs/internal(/|$))' || true)
+          bad=$(git ls-files | grep -E '(^|/)(CLAUDE\.local\.md|CLAUDE\.md|AGENTS\.md)$|(^|/)\.claude(/|$)|(^|/)\.workspace(/|$)|(^|/)docs/internal(/|$)' || true)
           if [ -n "$bad" ]; then
             printf 'Private paths present:\n%s\n' "$bad"
             exit 1
