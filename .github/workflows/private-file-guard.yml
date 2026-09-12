@@ -1,0 +1,30 @@
+name: private-file-guard
+
+# Reusable workflow called by every public Pith-Technologies repository.
+#
+# This is the only ring of the workspace leak guard that cannot be bypassed
+# from a laptop: the pre-commit and pre-push hooks both yield to --no-verify,
+# and `ws doctor` is advisory. A required status check backed by this workflow
+# is what actually keeps private paths out of a public repository.
+#
+# The pattern list mirrors policy/forbidden-paths.txt in PithTech-Workspace.
+# Change them together or the rings disagree.
+
+on: { workflow_call: {} }
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Refuse private paths
+        run: |
+          bad=$(git ls-files | grep -E '^(CLAUDE\.local\.md|CLAUDE\.md|AGENTS\.md|\.claude(/|$)|\.workspace(/|$)|docs/internal(/|$))' || true)
+          if [ -n "$bad" ]; then
+            printf 'Private paths present:\n%s\n' "$bad"
+            exit 1
+          fi
+          echo "no private paths tracked"
