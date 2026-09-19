@@ -1,0 +1,106 @@
+name: commit-policy
+
+# Reusable workflow called by every Pith-Technologies repository.
+#
+# Checks every commit a pull request would add, and the pull request itself,
+# against the team's commit policy:
+#
+#   1. No Claude Code attribution. No Co-Authored-By naming Claude or
+#      Anthropic, no Claude-Session trailer, no "Generated with Claude Code"
+#      footer, in any commit message or in the pull request body or title.
+#   2. Conventional Commit subjects (type(scope): summary), unless the caller
+#      passes conventional: false. Merge commits and reverts are exempt.
+#
+# The workspace git hooks refuse the same things at commit and push time, but
+# hooks run on laptops and can be skipped. A required status check backed by
+# this workflow is the ring that holds. Make it required on every default
+# branch; see docs/runbooks/making-a-repository-public.md in PithTech-Workspace.
+
+on:
+  workflow_call:
+    inputs:
+      conventional:
+        description: Require Conventional Commit subjects on every commit
+        type: boolean
+        default: true
+      types:
+        description: Allowed Conventional Commit types, as an extended regex alternation
+        type: string
+        default: "feat|fix|docs|chore|refactor|test|perf|ci|build|style|revert|deps"
+
+permissions:
+  contents: read
+
+jobs:
+  policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check every commit and the pull request
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+          CONVENTIONAL: ${{ inputs.conventional }}
+          TYPES: ${{ inputs.types }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -u
+          zero=0000000000000000000000000000000000000000
+          attribution='^Co-Authored-By:.*(claude|anthropic)|^Claude-Session:|Generated with \[?Claude Code|claude\.ai/code/session'
+          subject="^($TYPES)(\([^)]+\))?!?: [^ ].*"
+
+          if [ "$EVENT" = pull_request ]; then
+            range="$BASE_SHA..$HEAD_SHA"
+          elif [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "$zero" ] && git cat-file -e "$BEFORE_SHA^{commit}" 2>/dev/null; then
+            range="$BEFORE_SHA..$AFTER_SHA"
+          else
+            range="$AFTER_SHA"
+            echo "no base to compare against; checking the head commit only"
+          fi
+
+          status=0
+          count=0
+          for sha in $(git rev-list --no-merges "$range"); do
+            count=$((count + 1))
+            short=$(git log -1 --format=%h "$sha")
+            subj=$(git log -1 --format=%s "$sha")
+            body=$(git log -1 --format=%B "$sha")
+            hit=$(printf '%s\n' "$body" | grep -n -i -E "$attribution" | grep -v -E '^[0-9]+:#' || true)
+            if [ -n "$hit" ]; then
+              printf '::error::%s carries Claude attribution: %s\n' "$short" "$hit"
+              status=1
+            fi
+            if [ "$CONVENTIONAL" = true ]; then
+              case "$subj" in
+                "Revert \""*|"Merge "*) ;;
+                *)
+                  if ! printf '%s\n' "$subj" | grep -q -E "$subject"; then
+                    printf '::error::%s subject is not a Conventional Commit (type(scope): summary; types: %s): %s\n' "$short" "$TYPES" "$subj"
+                    status=1
+                  fi
+                  ;;
+              esac
+            fi
+          done
+          echo "checked $count commit(s) in $range"
+
+          if [ "$EVENT" = pull_request ]; then
+            hit=$(printf '%s\n%s\n' "$PR_TITLE" "$PR_BODY" | grep -n -i -E "$attribution" || true)
+            if [ -n "$hit" ]; then
+              printf '::error::the pull request title or body carries Claude attribution: %s\n' "$hit"
+              status=1
+            fi
+            echo "checked the pull request title and body"
+          fi
+
+          if [ "$status" != 0 ]; then
+            echo "Reword the commits (git rebase -i, or amend) and edit the pull request; nothing else needs to change."
+          fi
+          exit "$status"
